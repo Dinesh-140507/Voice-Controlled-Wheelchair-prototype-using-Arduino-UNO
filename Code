@@ -1,0 +1,329 @@
+#include <Wire.h>
+#include <Servo.h>
+#include <AFMotor_R4.h>
+#include <SoftwareSerial.h>
+
+SoftwareSerial BT(2, 3);
+
+#define ECHO_PIN      A0
+#define TRIG_PIN      A1
+#define SERVO_PIN     10
+#define SPEED         170
+#define SPOINT        103
+#define OBSTACLE_DIST 12
+
+int Left  = 0;
+int Right = 0;
+
+Servo servo;
+AF_DCMotor M1(1);
+AF_DCMotor M2(2);
+AF_DCMotor M3(3);
+AF_DCMotor M4(4);
+
+void setup() {
+  Serial.begin(9600);
+  BT.begin(9600);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  servo.attach(SERVO_PIN);
+  servo.write(SPOINT);
+  delay(500);
+
+  M1.setSpeed(SPEED);
+  M2.setSpeed(SPEED);
+  M3.setSpeed(SPEED);
+  M4.setSpeed(SPEED);
+  Stop();
+
+  printHelp();
+}
+
+void loop() {
+  // Read from Serial Monitor
+  if (Serial.available() > 0) {
+    char c = readChar(Serial.read());
+    if (c != 0) {
+      Serial.print(">> Command: ");
+      Serial.println(c);
+      execute(c);
+    }
+  }
+
+  // Read from Bluetooth
+  if (BT.available() > 0) {
+    char c = readChar(BT.read());
+    if (c != 0) {
+      Serial.print("[BT] Command: ");
+      Serial.println(c);
+      execute(c);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Clean incoming character
+// Returns 0 if it should be ignored
+// ─────────────────────────────────────────────
+char readChar(char c) {
+  if (c == '\n' || c == '\r' || c == ' ') return 0;
+  return toupper(c);
+}
+
+// ─────────────────────────────────────────────
+// Single execute function handles ALL commands
+// Works identically from Serial Monitor and BT
+// ─────────────────────────────────────────────
+void execute(char cmd) {
+  switch (cmd) {
+
+    // ── Motor commands ──
+    case 'F':
+      forward();
+      Serial.println("Action: FORWARD");
+      break;
+
+    case 'B':
+      backward();
+      Serial.println("Action: BACKWARD");
+      break;
+
+    case 'L':
+      left();
+      Serial.println("Action: LEFT");
+      break;
+
+    case 'R':
+      right();
+      Serial.println("Action: RIGHT");
+      break;
+
+    case 'S':
+      Stop();
+      Serial.println("Action: STOP");
+      break;
+
+    // ── Obstacle avoidance toggle ──
+    case 'O':
+      Serial.println("Action: OBSTACLE MODE — press S to stop");
+      obstacleMode();
+      break;
+
+    // ── Voice style commands ──
+    case '^':
+      forward();
+      Serial.println("Action: FORWARD (voice)");
+      break;
+
+    case '-':
+      backward();
+      Serial.println("Action: BACKWARD (voice)");
+      break;
+
+    case '<':
+      Serial.println("Action: LEFT CHECK (voice)");
+      Left = leftsee();
+      servo.write(SPOINT);
+      delay(500);
+      if (Left >= 10) {
+        left();
+        delay(500);
+        Stop();
+        Serial.print("Left clear: ");
+        Serial.print(Left);
+        Serial.println(" cm — turned left");
+      } else {
+        Stop();
+        Serial.print("Left blocked: ");
+        Serial.print(Left);
+        Serial.println(" cm — staying stopped");
+      }
+      break;
+
+    case '>':
+      Serial.println("Action: RIGHT CHECK (voice)");
+      Right = rightsee();
+      servo.write(SPOINT);
+      delay(500);
+      if (Right >= 10) {
+        right();
+        delay(500);
+        Stop();
+        Serial.print("Right clear: ");
+        Serial.print(Right);
+        Serial.println(" cm — turned right");
+      } else {
+        Stop();
+        Serial.print("Right blocked: ");
+        Serial.print(Right);
+        Serial.println(" cm — staying stopped");
+      }
+      break;
+
+    case '*':
+      Stop();
+      Serial.println("Action: STOP (voice)");
+      break;
+
+    // ── Servo test ──
+    case 'C':
+      servo.write(SPOINT);
+      Serial.println("Servo: CENTER");
+      break;
+
+    // ── Ultrasonic test ──
+    case 'D':
+      int dist = ultrasonic();
+      Serial.print("Distance: ");
+      Serial.print(dist);
+      Serial.println(" cm");
+      break;
+
+    // ── Help ──
+    case 'H':
+      printHelp();
+      break;
+
+    default:
+      Serial.print("Unknown command: ");
+      Serial.println(cmd);
+      Serial.println("Send H for help");
+      break;
+  }
+}
+
+// ─────────────────────────────────────────────
+//  OBSTACLE AVOIDANCE
+// ─────────────────────────────────────────────
+void obstacleMode() {
+  // Runs until S is received
+  while (true) {
+    // Check for stop command
+    if (Serial.available() > 0) {
+      char c = toupper(Serial.read());
+      if (c == 'S') {
+        Stop();
+        Serial.println("Obstacle mode stopped");
+        return;
+      }
+    }
+    if (BT.available() > 0) {
+      char c = toupper(BT.read());
+      if (c == 'S') {
+        Stop();
+        Serial.println("Obstacle mode stopped");
+        return;
+      }
+    }
+
+    int distance = ultrasonic();
+
+    if (distance <= OBSTACLE_DIST) {
+      Stop();
+      Serial.print("[OBS] Obstacle at ");
+      Serial.print(distance);
+      Serial.println(" cm");
+
+      backward(); delay(200); Stop(); delay(300);
+
+      Left  = leftsee();  servo.write(SPOINT); delay(800);
+      Right = rightsee(); servo.write(SPOINT); delay(800);
+
+      Serial.print("[OBS] L:"); Serial.print(Left);
+      Serial.print(" R:"); Serial.println(Right);
+
+      if      (Left > Right) { left();  delay(500); }
+      else if (Right > Left) { right(); delay(500); }
+      else                   { right(); delay(900); }
+
+      Stop(); delay(200);
+    } else {
+      forward();
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+//  ULTRASONIC
+// ─────────────────────────────────────────────
+int ultrasonic() {
+  digitalWrite(TRIG_PIN, LOW);  delayMicroseconds(4);
+  digitalWrite(TRIG_PIN, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long t = pulseIn(ECHO_PIN, HIGH);
+  return (int)(t / 58);
+}
+
+int leftsee()  { servo.write(180); delay(800); return ultrasonic(); }
+int rightsee() { servo.write(20);  delay(800); return ultrasonic(); }
+
+// ─────────────────────────────────────────────
+//  MOTOR FUNCTIONS
+//  M1 wires are swapped on terminal
+//  so BACKWARD in code = FORWARD physically
+// ─────────────────────────────────────────────
+void forward() {
+  M1.run(BACKWARD);  // M1 wires swapped
+  M2.run(FORWARD);
+  M3.run(FORWARD);
+  M4.run(FORWARD);
+}
+
+void backward() {
+  M1.run(FORWARD);   // M1 wires swapped
+  M2.run(BACKWARD);
+  M3.run(BACKWARD);
+  M4.run(BACKWARD);
+}
+
+void left() {
+  M1.run(FORWARD);   // Left  motors backward (M1 swapped)
+  M2.run(BACKWARD);
+  M3.run(FORWARD);   // Right motors forward
+  M4.run(FORWARD);
+}
+
+void right() {
+  M1.run(BACKWARD);  // Left  motors forward (M1 swapped)
+  M2.run(FORWARD);
+  M3.run(BACKWARD);  // Right motors backward
+  M4.run(BACKWARD);
+}
+
+void Stop() {
+  M1.run(RELEASE);
+  M2.run(RELEASE);
+  M3.run(RELEASE);
+  M4.run(RELEASE);
+}
+
+// ─────────────────────────────────────────────
+void printHelp() {
+  Serial.println("==============================");
+  Serial.println("   Robot Car — Command List");
+  Serial.println("==============================");
+  Serial.println(" MOTOR COMMANDS:");
+  Serial.println("   F = Forward");
+  Serial.println("   B = Backward");
+  Serial.println("   L = Left");
+  Serial.println("   R = Right");
+  Serial.println("   S = Stop");
+  Serial.println(" AUTONOMOUS:");
+  Serial.println("   O = Obstacle mode (S to stop)");
+  Serial.println(" VOICE COMMANDS:");
+  Serial.println("   ^ = Forward");
+  Serial.println("   - = Backward");
+  Serial.println("   < = Check left and turn");
+  Serial.println("   > = Check right and turn");
+  Serial.println("   * = Stop");
+  Serial.println(" DIAGNOSTIC:");
+  Serial.println("   D = Read distance");
+  Serial.println("   C = Center servo");
+  Serial.println("   H = Show this help");
+  Serial.println("==============================");
+  Serial.println("Works from Serial Monitor AND");
+  Serial.println("Bluetooth app simultaneously");
+  Serial.println("==============================");
+}
